@@ -9,13 +9,25 @@ import httpx
 app = FastAPI()
 ua = UserAgent()
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # 로그인
 @app.post("/login-test")
 async def login_test(
     loginId: str = Form(...),
     loginPwd: str = Form(...),
-    start_date: date = date.today(),
-    end_date: date = date.today() + timedelta(days=1)
+    start_date: date = Form(...),
+    end_date: date = Form(...)
 ):
     url = "https://www.ggdorm.or.kr/user/login"
 
@@ -117,6 +129,7 @@ async def fetch_user_info(jsession_id, registration_no, start_date, end_date):
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=500, detail=f"기숙사 서버 통신 오류: {exc}")
         
+# 외박 신청
 async def submit(extracted_data, start_date, end_date, jsession_id):
     target_url = "https://www.ggdorm.or.kr/ko/index/mypage/stayout/"
     
