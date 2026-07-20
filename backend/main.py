@@ -5,11 +5,11 @@ from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse
 from fake_useragent import UserAgent
 import httpx
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 ua = UserAgent()
 
-from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,170 +21,139 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 로그인
-@app.post("/login-test")
-async def login_test(
+BASE_URL = "https://www.ggdorm.or.kr"
+
+DEFAULT_HEADER = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": ua.chrome
+    }
+
+def get_input_value(soup: BeautifulSoup, name: str) -> str:
+    tag = soup.find("input", {"name": name})
+    return tag.get("value", "") if tag else ""
+
+@app.post("/stayout")
+async def stayout(
     loginId: str = Form(...),
     loginPwd: str = Form(...),
     start_date: date = Form(...),
     end_date: date = Form(...)
 ):
-    url = "https://www.ggdorm.or.kr/user/login"
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        headers=DEFAULT_HEADER,
+        timeout=10
+    ) as client:
 
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": ua.chrome
-    }
-        
-    data = {
-        "retUrl": "/ko/index/mypage/stayout/",
-        "loginId": loginId,
-        "loginPwd": loginPwd
-    }
+        registration_no = await login(
+            client,
+            loginId,
+            loginPwd
+        )
 
-    async with httpx.AsyncClient(follow_redirects=True) as client:
-        response = await client.post(url, headers=headers, data=data, timeout=5)
-        jsession_id = client.cookies.get("JSESSIONID")
-        soup = BeautifulSoup(response.text, "html.parser")
+        user_info = await fetch_user_info(
+            client,
+            registration_no
+        )
 
-        registration_no = soup.find(
-            "input",
-            {"name": "registrationNo"}
-        )["value"]
-        
-        print(await fetch_user_info(jsession_id, registration_no, start_date, end_date))
+        await submit_stayout(
+            client,
+            user_info,
+            start_date,
+            end_date
+        )
 
-        return jsession_id, registration_no
+        return {
+            "success": True,
+            "message": "외박 신청이 완료되었습니다."
+        }
     
-# 외박 신청을 위한 사용자 정보 확인
-async def fetch_user_info(jsession_id, registration_no, start_date, end_date):
-    url = "https://www.ggdorm.or.kr/ko/index/mypage/stayout/"
+async def login(
+    client: httpx.AsyncClient,
+    login_id: str,
+    login_pwd: str,
+) -> str:
 
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": ua.chrome
+    response = await client.post(
+        BASE_URL + "/user/login",
+        data={
+            "retUrl": "/ko/index/mypage/stayout/",
+            "loginId": login_id,
+            "loginPwd": login_pwd,
+        },
+    )
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    registration_no = get_input_value(
+        soup,
+        "registrationNo"
+    )
+
+    if not registration_no:
+        raise HTTPException(
+            status_code=401,
+            detail="로그인에 실패했습니다."
+        )
+
+    return registration_no
+
+async def fetch_user_info(
+    client: httpx.AsyncClient,
+    registration_no: str,
+):
+
+    response = await client.post(
+        BASE_URL + "/ko/index/mypage/stayout/",
+        data={
+            "registrationNo": registration_no,
+            "mode": "write"
+        }
+    )
+
+    soup = BeautifulSoup(
+        response.text,
+        "html.parser"
+    )
+
+    return {
+        "registrationNo": registration_no,
+        "studentId": get_input_value(soup, "stno"),
+        "studentName": get_input_value(soup, "namekor"),
+        "gender": get_input_value(soup, "sex"),
+        "roomInfo": get_input_value(soup, "roominfo"),
+        "phone": get_input_value(soup, "cellno"),
     }
 
-    cookies = {
-        "JSESSIONID" : jsession_id
-    }
-
-    data = {
-        "registrationNo" : registration_no,
-        "mode": "write"
-    }
-
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(
-                url=url, 
-                headers=headers,
-                cookies=cookies,
-                data=data
-            )
-            
-            html_text = response.text
-            soup = BeautifulSoup(html_text, 'html.parser')
-
-            extracted_data = {
-                "registrationNo": (
-                    soup.find("input", {"name": "registrationNo"}).get("value", "")
-                    if soup.find("input", {"name": "registrationNo"})
-                    else ""
-                ),
-                "studentId": (
-                    soup.find("input", {"name": "stno"}).get("value", "")
-                    if soup.find("input", {"name": "stno"})
-                    else ""
-                ),
-                "studentName": (
-                    soup.find("input", {"name": "namekor"}).get("value", "")
-                    if soup.find("input", {"name": "namekor"})
-                    else ""
-                ),
-                "gender": (
-                    soup.find("input", {"name": "sex"}).get("value", "")
-                    if soup.find("input", {"name": "sex"})
-                    else ""
-                ),
-                "roomInfo": (
-                    soup.find("input", {"name": "roominfo"}).get("value", "")
-                    if soup.find("input", {"name": "roominfo"})
-                    else ""
-                ),
-                "phone": (
-                    soup.find("input", {"name": "cellno"}).get("value", "")
-                    if soup.find("input", {"name": "cellno"})
-                    else ""
-                ),
-            }
-            await submit(extracted_data, start_date, end_date, jsession_id)
-            
-            return {
-                "status_code": response.status_code,
-                "message": "기숙사 정보 추출 성공",
-                "data": extracted_data
-            }
-                    
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=500, detail=f"기숙사 서버 통신 오류: {exc}")
-        
-# 외박 신청
-async def submit(extracted_data, start_date, end_date, jsession_id):
-    target_url = "https://www.ggdorm.or.kr/ko/index/mypage/stayout/"
-    
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": ua.chrome
-    }
-
-    cookies = {
-        "JSESSIONID" : jsession_id
-    }
-
-    print("submit")
-    print(extracted_data)
+async def submit_stayout(
+    client: httpx.AsyncClient,
+    user: dict,
+    start_date: date,
+    end_date: date,
+):
 
     payload = {
         "startYmd": start_date,
-        "endYmd": end_date,  
+        "endYmd": end_date,
         "reason": "본가",
         "mode": "regist",
         "type": "write",
         "campus": "1",
-        "registrationNo": extracted_data["registrationNo"],
+        "registrationNo": user["registrationNo"],
         "seq": "",
-        "stno": extracted_data["studentId"],
-        "namekor": extracted_data["studentName"],  # 실제 성명 기입
-        "sex": extracted_data["gender"],
-        "roominfo": extracted_data["roomInfo"],
-        "cellno": extracted_data["phone"],
+        "stno": user["studentId"],
+        "namekor": user["studentName"],
+        "sex": user["gender"],
+        "roominfo": user["roomInfo"],
+        "cellno": user["phone"],
         "startHh": "00",
-        "endHh": "00"
+        "endHh": "00",
     }
 
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(
-                target_url, 
-                headers=headers, 
-                cookies=cookies,
-                data=payload,
-                timeout=10.0
-            )
-            print("@@@@@@@@@@@@@@@@@@@@@@@@@")
-            
-            print({
-                "status_code": response.status_code,
-                "message": "외박 신청 요청 완료",
-                "html_preview": response.text
-            }
-            )
-            
-        except httpx.HTTPError as exc:
-            print(exec)
-            raise HTTPException(status_code=500, detail=f"기숙사 서버 통신 오류: {exc}")
-
+    await client.post(
+        BASE_URL + "/ko/index/mypage/stayout/",
+        data=payload
+    )
 
 if __name__ == "__main__":
     import uvicorn
